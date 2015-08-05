@@ -77,7 +77,7 @@ func (r *Router) Handle(cmdln string, handle Handle) {
 	cmdRe := `^` + string(reCmd.ReplaceAll([]byte(cmdSpace), []byte(`(?P<$1>\w+)`))) + `$`
 
 	// Loop through all of the subcommands and add those handlers here
-	// log.Println("registering: ", cmdRe)
+	log.Println("registering: ", cmdRe)
 
 	r.trees[regexp.MustCompile(cmdRe)] = handle
 }
@@ -132,7 +132,7 @@ func (r *Router) Options(opts interface{}) {
 	r.opts = opts
 }
 
-func (r *Router) Commands(cmds interface{}) {
+func (r *Router) Command(cmds interface{}) {
 	r.cmds = cmds
 }
 
@@ -176,7 +176,7 @@ func parseCmds(rx *regexp.Regexp, cmdtxt string, cmd interface{}) {
 
 	val := reflect.ValueOf(reflect.ValueOf(cmd).Interface())
 	if val.Elem().Type().Kind() != reflect.Struct {
-		log.Fatal("Only stucts can be passed in. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
+		log.Fatal("Only stucts can be passed in [1]. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
 	}
 
 	// For now we can only accept flat command. No structs or slices.
@@ -250,7 +250,7 @@ func parseArgsToMap(mode int, args []string) (pags []Argument, opts map[string]*
 func parseArgsToStruct(mode int, args []string, optsIn interface{}) (pags []Argument, opts interface{}, unhandled map[string]string) {
 	val := reflect.ValueOf(reflect.ValueOf(optsIn).Interface())
 	if val.Elem().Type().Kind() != reflect.Struct {
-		log.Fatal("Only stucts can be passed in. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
+		log.Fatal("Only stucts can be passed in [2]. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
 	}
 
 	// For now we can only accept flat options. No structs or slices.
