@@ -32,7 +32,6 @@ type SubRouter struct {
 }
 
 func (sr *SubRouter) SubCmd(s string) *SubRouter {
-	log.Println("subcmd")
 	return sr.Router.SubCmd(sr.subcmd + " " + s)
 }
 
@@ -78,8 +77,7 @@ func (r *Router) Handle(cmdln string, handle CmdlnHandle) {
 	cmdRe := `^` + string(reCmd.ReplaceAll([]byte(cmdSpace), []byte(`(?P<$1>\w+)`))) + `$`
 
 	// Loop through all of the subcommands and add those handlers here
-
-	log.Println("registering: ", cmdRe)
+	// log.Println("registering: ", cmdRe)
 
 	r.trees[regexp.MustCompile(cmdRe)] = handle
 }
