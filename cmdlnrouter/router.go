@@ -71,7 +71,7 @@ func (r *Router) Handle(cmdln string, handle Handle) {
 		r.trees = make(map[*regexp.Regexp]Handle)
 	}
 
-	cmdSpace := strings.Join(strings.Fields(cmdln), `\s+`)
+	cmdSpace := strings.Join(strings.Fields(regexp.QuoteMeta(cmdln)), `\s+`)
 
 	reCmd := regexp.MustCompile(`:(\w+)`)
 	cmdRe := `^` + string(reCmd.ReplaceAll([]byte(cmdSpace), []byte(`(?P<$1>\w+)`))) + `$`
