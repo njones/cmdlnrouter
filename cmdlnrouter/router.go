@@ -398,3 +398,19 @@ func Join(args []Argument, s string) string {
 	}
 	return strings.Join(str, s)
 }
+
+func DefaultStr(x string) *string {
+	return &x
+}
+
+func DefaultInt(x int) *int {
+	return &x
+}
+
+func DefaultFloat(x float64) *float64 {
+	return &x
+}
+
+func DefaultBool(x bool) *bool {
+	return &x
+}
