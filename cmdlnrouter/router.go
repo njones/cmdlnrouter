@@ -2,10 +2,10 @@ package cmdlnrouter
 
 import (
 	"log"
-	"regexp"
-	"strings"
 	"reflect"
+	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Bitwise parsing mode idenifiers.
@@ -30,26 +30,26 @@ type SubRouter struct {
 	subcmd string
 	*Router
 }
+
 func (sr *SubRouter) SubCmd(s string) *SubRouter {
 	log.Println("subcmd")
 	return sr.Router.SubCmd(sr.subcmd + " " + s)
 }
 
 func (sr *SubRouter) Handle(cmdln string, handle CmdlnHandle) {
-	sr.Router.Handle(sr.subcmd + " " + cmdln, handle)
+	sr.Router.Handle(sr.subcmd+" "+cmdln, handle)
 }
 
 func (sr *SubRouter) Handler(cmdln string, handler CmdlnHandler) {
-	 sr.Router.Handler(sr.subcmd + " " + cmdln, handler)
+	sr.Router.Handler(sr.subcmd+" "+cmdln, handler)
 }
 
 func (sr *SubRouter) HandlerFunc(cmdln string, handler CmdlnHandlerFunc) {
-	sr.Router.Handler(sr.subcmd + " " + cmdln, handler)
+	sr.Router.Handler(sr.subcmd+" "+cmdln, handler)
 }
 
-
 type Router struct {
-	subs  map[string]*SubRouter
+	subs map[string]*SubRouter
 
 	opts  interface{}
 	cmds  interface{}
@@ -72,7 +72,7 @@ func (r *Router) Handle(cmdln string, handle CmdlnHandle) {
 		r.trees = make(map[*regexp.Regexp]CmdlnHandle)
 	}
 
-	cmdSpace := strings.Join(strings.Fields(cmdln), `\s+`)
+	cmdSpace := regexp.QuoteMeta(strings.Join(strings.Fields(cmdln), `\s+`))
 
 	reCmd := regexp.MustCompile(`:(\w+)`)
 	cmdRe := `^` + string(reCmd.ReplaceAll([]byte(cmdSpace), []byte(`(?P<$1>\w+)`))) + `$`
@@ -104,6 +104,8 @@ func (r *Router) ServeCmdln(c *Context) {
 	for rx, handle := range r.trees {
 		if rx.Match(c.cmdlnParse) {
 
+			parseCmds(rx, string(c.cmdlnParse), &r.cmds)
+			c.Command = r.cmds
 			handle(c)
 			return
 		}
@@ -124,7 +126,7 @@ func (r *Router) SubCmd(s string) *SubRouter {
 		r.subs = make(map[string]*SubRouter)
 	}
 
-	r.subs[s] = &SubRouter{ subcmd:s, Router: new(Router) }
+	r.subs[s] = &SubRouter{subcmd: s, Router: new(Router)}
 	return r.subs[s]
 }
 
@@ -157,6 +159,50 @@ func Parse(args []string, handler CmdlnHandler) {
 	}
 }
 
+func parseCmds(rx *regexp.Regexp, cmdtxt string, cmd interface{}) {
+	if cmd == nil {
+		return
+	}
+
+	names := rx.SubexpNames()
+	values := rx.FindStringSubmatch(cmdtxt)
+
+	if r, ok := cmd.(map[string]interface{}); ok {
+		for i, v := range names {
+			if len(v) > 0 {
+				r[v] = values[i]
+			}
+		}
+		return
+	}
+
+	val := reflect.ValueOf(reflect.ValueOf(cmd).Interface())
+	if val.Elem().Type().Kind() != reflect.Struct {
+		log.Fatal("Only stucts can be passed in. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
+	}
+
+	// For now we can only accept flat command. No structs or slices.
+	// Just the following type:
+	//    *string
+
+	elm := val.Elem()
+	for i := 0; i < elm.NumField(); i++ {
+		vField := elm.Field(i)
+		tField := elm.Type().Field(i)
+
+		for n, v := range names {
+			if strings.ToLower(tField.Name) == strings.ToLower(v) {
+				if vField.CanSet() {
+					vField.Set(reflect.ValueOf(&values[n]))
+				}
+				break
+			}
+		}
+	}
+
+	return
+}
+
 func parseArgs(args []string, handler CmdlnHandler) ([]Argument, interface{}, map[string]string) {
 	// create a map of the options we will be looking for
 	var pags []Argument
@@ -176,7 +222,7 @@ func parseArgs(args []string, handler CmdlnHandler) ([]Argument, interface{}, ma
 		if r.opts != nil {
 			pags, opts, xtra = parseArgsToStruct(r.mode, args, r.opts)
 		} else {
-			pags, opts = parseArgsToMap(r.mode, args)	
+			pags, opts = parseArgsToMap(r.mode, args)
 		}
 	}
 	return pags, opts, xtra
@@ -203,10 +249,10 @@ func parseArgsToMap(mode int, args []string) (pags []Argument, opts map[string]*
 	return
 }
 
-func parseArgsToStruct(mode int, args []string, optStruct interface{}) (pags []Argument, opts interface{}, unhandledMap map[string]string) {
-	val := reflect.ValueOf(reflect.ValueOf(optStruct).Interface())
+func parseArgsToStruct(mode int, args []string, optsIn interface{}) (pags []Argument, opts interface{}, unhandled map[string]string) {
+	val := reflect.ValueOf(reflect.ValueOf(optsIn).Interface())
 	if val.Elem().Type().Kind() != reflect.Struct {
-		log.Fatal("Only stucts can be passed in. Please check the type of the optStruct interface{}. Found: ", val.Elem().Type().Kind())
+		log.Fatal("Only stucts can be passed in. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
 	}
 
 	// For now we can only accept flat options. No structs or slices.
@@ -215,10 +261,10 @@ func parseArgsToStruct(mode int, args []string, optStruct interface{}) (pags []A
 	//    *float
 	//    *string
 	//    *bool
-	
+
 	// This will hold the field names of the struct to compare the comandline
 	// against.
-	flatMap := make(map[string]struct{
+	flatMap := make(map[string]struct {
 		k int  // key index
 		v int  // value index
 		f bool // found in struct
@@ -227,7 +273,7 @@ func parseArgsToStruct(mode int, args []string, optStruct interface{}) (pags []A
 	// This is a 3 step process
 	// STEP 1
 	// 1. Create a copy of the Arguments list
-	// 2. Create an options map with the items from the Args list that 
+	// 2. Create an options map with the items from the Args list that
 	//    are flags
 
 	// STEP 2
@@ -243,23 +289,21 @@ func parseArgsToStruct(mode int, args []string, optStruct interface{}) (pags []A
 		tmpPags = append(tmpPags, Argument{arg: arg})
 
 		if arg[0] == '-' {
-			v := i+1
+			v := i + 1
 			if v > len(args) {
 				v = -1
 			}
-			flatMap[arg] = struct{
-				k int 
-				v int  
-				f bool 
-			} {i, i+1, false} // always return index of the value to take.
+			flatMap[arg] = struct {
+				k int
+				v int
+				f bool
+			}{i, i + 1, false} // always return index of the value to take.
 			continue
 		}
 		if i-1 >= 0 && args[i-1][0] == '-' {
 			continue // skip becuase it should have already be processed
 		}
 	}
-
-	unhandledMap = make(map[string]string)
 
 	// Add the data to the struct, using type hints to apply the data
 	var removeArg Argument
@@ -330,9 +374,11 @@ func parseArgsToStruct(mode int, args []string, optStruct interface{}) (pags []A
 		}
 	}
 
+	unhandled = make(map[string]string)
+
 	for _, v := range tmpPags {
 		if val, ok := flatMap[v.arg]; ok {
-			unhandledMap[v.arg] = args[val.v]
+			unhandled[v.arg] = args[val.v]
 			tmpPags[val.k] = removeArg
 			if val.v != -1 {
 				tmpPags[val.v] = removeArg
@@ -344,7 +390,7 @@ func parseArgsToStruct(mode int, args []string, optStruct interface{}) (pags []A
 		}
 	}
 
-	return pags, optStruct, unhandledMap
+	return pags, optsIn, unhandled
 }
 
 func Join(args []Argument, s string) string {

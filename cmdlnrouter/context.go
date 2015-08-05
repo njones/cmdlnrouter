@@ -1,10 +1,10 @@
 package cmdlnrouter
 
 import (
+	"bufio"
+	"fmt"
 	"io"
 	"os"
-	"fmt"
-	"bufio"
 )
 
 type Argument struct {
@@ -25,8 +25,20 @@ type Context struct {
 	Stdout io.Writer
 	StdErr io.Writer
 
-	cmdlnAsRaw []byte // The full raw commandline as bytes.
-	cmdlnParse []byte // The full parsed commandline as bytes.
+	bag        map[string]interface{} // holds items to pass along with the context
+	cmdlnAsRaw []byte                 // The full raw commandline as bytes.
+	cmdlnParse []byte                 // The full parsed commandline as bytes.
+}
+
+func (c *Context) Set(key string, value interface{}) {
+	if c.bag == nil {
+		c.bag = make(map[string]interface{})
+	}
+	c.bag[key] = value
+}
+
+func (c *Context) Get(key string) interface{} {
+	return c.bag[key]
 }
 
 // NewContext returns a new context that can be used by the cmdln

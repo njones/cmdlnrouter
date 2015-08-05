@@ -4,6 +4,7 @@ import "testing"
 import "strings"
 import "reflect"
 import "encoding/json"
+import "regexp"
 
 func TestParseArgsToMap(t *testing.T) {
 
@@ -16,73 +17,73 @@ func TestParseArgsToMap(t *testing.T) {
 		opts map[string]*string
 	}{
 		{
-			[]string{"example"}, 
-			[]string{"example"}, 
+			[]string{"example"},
+			[]string{"example"},
 			map[string]*string{},
 		},
 		{
-			strings.Split("example with more than 1", " "), 
-			[]string{"example", "with", "more", "than", "1"}, 
+			strings.Split("example with more than 1", " "),
+			[]string{"example", "with", "more", "than", "1"},
 			map[string]*string{},
 		},
 		{
-			strings.Split("--example with --only flags", " "), 
-			[]string{}, 
-			map[string]*string{"--example": ptrs("with"), "--only":ptrs("flags")},
+			strings.Split("--example with --only flags", " "),
+			[]string{},
+			map[string]*string{"--example": ptrs("with"), "--only": ptrs("flags")},
 		},
 		{
-			strings.Split("--example --with --really --only --flags", " "), 
-			[]string{}, 
+			strings.Split("--example --with --really --only --flags", " "),
+			[]string{},
 			map[string]*string{
-				"--example": ptrs("--with"), 
-				"--with":ptrs("--really"), 
-				"--really":ptrs("--only"),
-				"--only":ptrs("--flags"),
-				"--flags":ptrn(),
+				"--example": ptrs("--with"),
+				"--with":    ptrs("--really"),
+				"--really":  ptrs("--only"),
+				"--only":    ptrs("--flags"),
+				"--flags":   ptrn(),
 			},
 		},
 		{
-			[]string{"example", "--simple", "flag"}, 
-			[]string{"example"}, 
+			[]string{"example", "--simple", "flag"},
+			[]string{"example"},
 			map[string]*string{"--simple": ptrs("flag")},
 		},
 		{
-			strings.Split("example -s flag", " "), 
-			[]string{"example"}, 
+			strings.Split("example -s flag", " "),
+			[]string{"example"},
 			map[string]*string{"-s": ptrs("flag")},
 		},
 		{
-			strings.Split("example -s flag example", " "), 
-			[]string{"example", "example"}, 
+			strings.Split("example -s flag example", " "),
+			[]string{"example", "example"},
 			map[string]*string{"-s": ptrs("flag")},
 		},
 		{
-			strings.Split("example -swma flag example", " "), 
-			[]string{"example", "example"}, 
+			strings.Split("example -swma flag example", " "),
+			[]string{"example", "example"},
 			map[string]*string{"-swma": ptrs("flag")},
 		},
 		{
-			strings.Split("example -swma", " "), 
-			[]string{"example"}, 
+			strings.Split("example -swma", " "),
+			[]string{"example"},
 			map[string]*string{"-swma": ptrn()},
 		},
 		{
-			strings.Split("--simple flag example", " "), 
-			[]string{"example"}, 
+			strings.Split("--simple flag example", " "),
+			[]string{"example"},
 			map[string]*string{"--simple": ptrs("flag")},
 		},
 		{
-			strings.Split("ex•mple -a 1 -b 2 --cdef 3 four", " "), 
-			[]string{"ex•mple", "four"}, 
+			strings.Split("ex•mple -a 1 -b 2 --cdef 3 four", " "),
+			[]string{"ex•mple", "four"},
 			map[string]*string{
-				"-a": ptrs("1"), 
-				"-b": ptrs("2"), 
+				"-a":     ptrs("1"),
+				"-b":     ptrs("2"),
 				"--cdef": ptrs("3"),
 			},
 		},
 		{
-			[]string{"bonjour", "⛳", "-a", "hello world"}, 
-			[]string{"bonjour", "⛳"}, 
+			[]string{"bonjour", "⛳", "-a", "hello world"},
+			[]string{"bonjour", "⛳"},
 			map[string]*string{"-a": ptrs("hello world")},
 		},
 	}
@@ -111,6 +112,10 @@ type TestOptionsStruct1 struct {
 	D *bool    `cmdln:"--dei,-d,A short description"`
 }
 
+type TestCommandStruct1 struct {
+	Ample *string
+}
+
 func TestParseArgsToStruct(t *testing.T) {
 
 	tests := []struct {
@@ -120,21 +125,21 @@ func TestParseArgsToStruct(t *testing.T) {
 		opts string
 	}{
 		{
-			[]string{"example"}, 
-			[]string{"example"}, 
-			TestOptionsStruct1{}, 
+			[]string{"example"},
+			[]string{"example"},
+			TestOptionsStruct1{},
 			`{"A":null,"B":null,"C":null,"D":null}`,
 		},
 		{
-			[]string{"example", "--aye", "1"}, 
-			[]string{"example"}, 
-			TestOptionsStruct1{}, 
+			[]string{"example", "--aye", "1"},
+			[]string{"example"},
+			TestOptionsStruct1{},
 			`{"A":1,"B":null,"C":null,"D":null}`,
 		},
 		{
-			[]string{"example", "--aye", "1", "-b", "2.5", "--sea", "This is a test?"}, 
-			[]string{"example"}, 
-			TestOptionsStruct1{}, 
+			[]string{"example", "--aye", "1", "-b", "2.5", "--sea", "This is a test?"},
+			[]string{"example"},
+			TestOptionsStruct1{},
 			`{"A":1,"B":2.5,"C":"This is a test?","D":null}`,
 		},
 	}
@@ -157,5 +162,48 @@ func TestParseArgsToStruct(t *testing.T) {
 		if tst.opts != b2 {
 			t.Error("Expected:", tst.opts, "Found:", b2)
 		}
+	}
+}
+
+func TestParseCommand(t *testing.T) {
+
+	tests := []struct {
+		rgex *regexp.Regexp
+		cmln string
+		cmds string
+		strt TestCommandStruct1
+	}{
+		{
+			regexp.MustCompile(`^example$`),
+			"example",
+			`{"Ample":null}`,
+			TestCommandStruct1{},
+		},
+		{
+			regexp.MustCompile(`^(?P<ample>\w+)$`),
+			"example",
+			`{"Ample":"example"}`,
+			TestCommandStruct1{},
+		},
+	}
+
+	for _, tst := range tests {
+
+		parseCmds(tst.rgex, tst.cmln, &tst.strt)
+
+		a1, _ := json.Marshal(tst.strt)
+		a2 := string(a1)
+
+		if tst.cmds != a2 {
+			t.Error("Expected:", tst.cmds, "Found:", a2)
+		}
+	}
+
+	b1 := map[string]interface{}{"ample": "example"}
+	b2 := make(map[string]interface{})
+	parseCmds(regexp.MustCompile(`^(?P<ample>\w+)$`), "example", b2)
+
+	if !reflect.DeepEqual(b1, b2) {
+		t.Error("Expected:", b1, "Found:", b2)
 	}
 }
