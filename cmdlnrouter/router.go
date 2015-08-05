@@ -16,15 +16,15 @@ const (
 	ParseOptGoFlagStyle = ParseOptSingleDashAsOpt | ParseOptOnlyBeforeFirstCmd
 )
 
-type CmdlnHandle func(*Context)
+type Handle func(*Context)
 
-type CmdlnHandler interface {
+type Handler interface {
 	ServeCmdln(*Context)
 }
 
-type CmdlnHandlerFunc func(*Context)
+type HandlerFunc func(*Context)
 
-func (f CmdlnHandlerFunc) ServeCmdln(c *Context) { f(c) }
+func (f HandlerFunc) ServeCmdln(c *Context) { f(c) }
 
 type SubRouter struct {
 	subcmd string
@@ -35,15 +35,15 @@ func (sr *SubRouter) SubCmd(s string) *SubRouter {
 	return sr.Router.SubCmd(sr.subcmd + " " + s)
 }
 
-func (sr *SubRouter) Handle(cmdln string, handle CmdlnHandle) {
+func (sr *SubRouter) Handle(cmdln string, handle Handle) {
 	sr.Router.Handle(sr.subcmd+" "+cmdln, handle)
 }
 
-func (sr *SubRouter) Handler(cmdln string, handler CmdlnHandler) {
+func (sr *SubRouter) Handler(cmdln string, handler Handler) {
 	sr.Router.Handler(sr.subcmd+" "+cmdln, handler)
 }
 
-func (sr *SubRouter) HandlerFunc(cmdln string, handler CmdlnHandlerFunc) {
+func (sr *SubRouter) HandlerFunc(cmdln string, handler HandlerFunc) {
 	sr.Router.Handler(sr.subcmd+" "+cmdln, handler)
 }
 
@@ -52,10 +52,10 @@ type Router struct {
 
 	opts  interface{}
 	cmds  interface{}
-	trees map[*regexp.Regexp]CmdlnHandle
+	trees map[*regexp.Regexp]Handle
 
 	mode         int
-	NotFound     CmdlnHandler
+	NotFound     Handler
 	PanicHandler func(*Context, interface{})
 }
 
@@ -65,10 +65,10 @@ func (r *Router) recovery(c *Context) {
 	}
 }
 
-func (r *Router) Handle(cmdln string, handle CmdlnHandle) {
+func (r *Router) Handle(cmdln string, handle Handle) {
 
 	if r.trees == nil {
-		r.trees = make(map[*regexp.Regexp]CmdlnHandle)
+		r.trees = make(map[*regexp.Regexp]Handle)
 	}
 
 	cmdSpace := regexp.QuoteMeta(strings.Join(strings.Fields(cmdln), `\s+`))
@@ -82,7 +82,7 @@ func (r *Router) Handle(cmdln string, handle CmdlnHandle) {
 	r.trees[regexp.MustCompile(cmdRe)] = handle
 }
 
-func (r *Router) Handler(cmdln string, handler CmdlnHandler) {
+func (r *Router) Handler(cmdln string, handler Handler) {
 	r.Handle(cmdln,
 		func(c *Context) {
 			handler.ServeCmdln(c)
@@ -90,7 +90,7 @@ func (r *Router) Handler(cmdln string, handler CmdlnHandler) {
 	)
 }
 
-func (r *Router) HandlerFunc(cmdln string, handler CmdlnHandlerFunc) {
+func (r *Router) HandlerFunc(cmdln string, handler HandlerFunc) {
 	r.Handler(cmdln, handler)
 }
 
@@ -136,7 +136,7 @@ func (r *Router) Commands(cmds interface{}) {
 	r.cmds = cmds
 }
 
-func Parse(args []string, handler CmdlnHandler) {
+func Parse(args []string, handler Handler) {
 	parse, opts, extra := parseArgs(args, handler)
 
 	c := NewContext()
@@ -201,7 +201,7 @@ func parseCmds(rx *regexp.Regexp, cmdtxt string, cmd interface{}) {
 	return
 }
 
-func parseArgs(args []string, handler CmdlnHandler) ([]Argument, interface{}, map[string]string) {
+func parseArgs(args []string, handler Handler) ([]Argument, interface{}, map[string]string) {
 	// create a map of the options we will be looking for
 	var pags []Argument
 	var opts interface{}
