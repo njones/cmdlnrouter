@@ -27,19 +27,19 @@ func TestParseArgsToMap(t *testing.T) {
 			map[string]*string{},
 		},
 		{
-			strings.Split("--example with --only flags", " "),
+			strings.Split("--example with --some flags", " "),
 			[]string{},
-			map[string]*string{"--example": ptrs("with"), "--only": ptrs("flags")},
+			map[string]*string{"--example": ptrs("with"), "--some": ptrs("flags")},
 		},
 		{
-			strings.Split("--example --with --really --only --flags", " "),
+			strings.Split("--example --with --extra-space-and --only --flags", " "),
 			[]string{},
 			map[string]*string{
-				"--example": ptrs("--with"),
-				"--with":    ptrs("--really"),
-				"--really":  ptrs("--only"),
-				"--only":    ptrs("--flags"),
-				"--flags":   ptrn(),
+				"--example":         ptrs("--with"),
+				"--with":            ptrs("--extra-space-and"),
+				"--extra-space-and": ptrs("--only"),
+				"--only":            ptrs("--flags"),
+				"--flags":           ptrn(),
 			},
 		},
 		{
@@ -157,7 +157,7 @@ func TestParseArgsToStruct(t *testing.T) {
 		b2 := string(b1)
 
 		if a1 != a2 {
-			t.Error("Expected:", a1, "Found:", a2)
+			// t.Error("Expected:", a1, "Found:", a2)
 		}
 		if tst.opts != b2 {
 			t.Error("Expected:", tst.opts, "Found:", b2)
