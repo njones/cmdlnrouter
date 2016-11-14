@@ -1,116 +1,294 @@
 package cmdlnrouter
 
 import (
-	"errors"
-	"fmt"
 	"log"
 	"reflect"
-	"regexp"
-	"strconv"
 	"strings"
+	"time"
+
+	"github.com/pkg/errors"
 )
 
-// Bitwise parsing mode identifiers.
-const (
-	ParseOptSingleDashAsOpt = iota << 1
-	ParseOptOnlyBeforeFirstCmd
-	ParseFailOnUnhandled
-
-	ParseOptGoFlagStyle = ParseOptSingleDashAsOpt | ParseOptOnlyBeforeFirstCmd | ParseFailOnUnhandled
+var (
+	// ErrInvalidInterface - interface should be struct{}
+	ErrInvalidInterface = errors.New("Invalid interface, it should be a struct or map[string]string")
 )
 
+// TimeoutHandlerDuration specifies how long a timeout will happen for a cmdln request
+var TimeoutHandlerDuration = 2 * time.Second
+
+type (
+	valmap map[string]interface{}
+	argmap map[string][]handleArgFunc
+
+	handleArgFunc   func(out chan<- inputHandle) (args chan string, done chan struct{})
+	parseArgFunc    func(<-chan string, argmap, valmap, *Context) error
+	parseOptArgFunc func(<-chan string, valmap, *Context) (error, chan string)
+)
+
+// New returns a fully baked Router object
+func New(p ...parseOptArgFunc) *Router {
+	r := new(Router)
+	r.arg.pfn = parseArgs
+	if len(p) > 0 {
+		r.opt.pfn = p
+	}
+	return r
+}
+
+type (
+	argCmp struct {
+		argVar, argVal string
+	}
+	argsInputed []argCmp
+	argsHandled []string
+
+	inputHandle struct {
+		in argsInputed
+		hn Handle
+
+		er error
+	}
+)
+
+func (a *argsInputed) String() string {
+	ss := make([]string, len(*a))
+	for i, v := range *a {
+		if v.argVar != "" {
+			ss[i] = ":"
+			continue
+		}
+		ss[i] = v.argVal
+	}
+	return strings.Join(ss, "/")
+}
+
+func (a *argsHandled) String() string {
+	ss := make([]string, len(*a))
+	for i, v := range *a {
+		if v[0] == ':' {
+			ss[i] = ":"
+			continue
+		}
+		ss[i] = v
+	}
+	// skip the first one...
+	return strings.Join(ss[1:], "/")
+}
+
+func (a *argsHandled) Slice() []string {
+	return (*a)[1:]
+}
+
+func (a *argsHandled) Root() string {
+	return (*a)[0]
+}
+
+func getArgsHandled(s string) argsHandled {
+	return strings.Fields(s)
+}
+
+func doneTimeout(done chan struct{}) {
+	select {
+	case <-done:
+	// nothing we're just done...
+	case <-time.After(TimeoutHandlerDuration):
+		if _, ok := <-done; !ok {
+			close(done)
+		}
+	}
+}
+
+// Handle is the function signature for the context f(c)
 type Handle func(*Context)
 
+// A Handler responds to an parsed commandline request.
 type Handler interface {
 	ServeCmdln(*Context)
 }
 
-type HandlerFunc func(*Context)
+// The HandlerFunc type is an adapter to allow the use of
+// ordinary functions as CmdlnRouter handlers. If f is a function
+// with the appropriate signature, HandlerFunc(f) is a
+// Handler that calls f.
+type HandlerFunc Handle
 
+// ServeCmdln calls f(c).
 func (f HandlerFunc) ServeCmdln(c *Context) { f(c) }
 
+// Router is the main struct that is used to parse commandline options
 type Router struct {
-	subs map[string]*SubRouter
 
-	opts   interface{}
-	cmds   interface{}
-	trees  map[*regexp.Regexp]Handle
-	cmdlst []string
-
-	helpTree []map[string][]int
-
-	mode int
-
-	// All of the handlers for issues
-	HandlerDone      Handle
-	HelpHandler      Handle
-	NotFoundHandler  Handle
-	UnhandledHandler Handle
-	PanicHandler     func(*Context, interface{})
-}
-
-// Runs the PanicHandler if there is a panic
-func (r *Router) recovery(c *Context) {
-	if rcvr := recover(); rcvr != nil {
-		r.PanicHandler(c, rcvr)
+	// opt holds the Options struct. There must be exported fields for them to be catured
+	opt struct {
+		irf interface{}
+		val valmap
+		pfn []parseOptArgFunc
 	}
+
+	// arg holds the Argument struct. There must be exported fields for them to be captured
+	arg struct {
+		irf interface{}
+		val valmap
+		pfn parseArgFunc
+	}
+
+	tree struct {
+		arg argmap
+		hdl map[string]struct{}
+	}
+
+	Err error
 }
 
-func JoinWithSpace(ss []string) (s string) {
-	for i, x := range ss {
-		if i == 0 {
-			s = x
+// Arguments add the arugments struct to the router
+func (r *Router) Arguments(t interface{}) *Router {
+	val := reflect.ValueOf(reflect.ValueOf(t).Interface())
+	switch {
+	// error if the passed in interface{} not a pointer,
+	// or if it is a pointer but not a struct.
+	case val.Kind() != reflect.Ptr,
+		val.Kind() == reflect.Ptr && val.Elem().Type().Kind() != reflect.Struct:
+		r.arg.irf = nil
+		r.Err = ErrInvalidInterface
+		return r
+	}
+	// the rest happens if the passed in interface{} is a struct
+
+	r.arg.val = make(valmap)
+	r.arg.irf = t
+	elm := val.Elem()
+
+	// loop through all of the fields of the passed in struct
+	for i := 0; i < elm.NumField(); i++ {
+		vField := elm.Field(i)
+		tField := elm.Type().Field(i)
+
+		if !vField.CanSet() {
+			// warning...
+			log.Println("Unexported field:", tField.Name)
 			continue
 		}
-		switch x[len(x)-1] {
-		case '?':
-			s += `\s*` + x
-		default:
-			s += `\s+` + x
-		}
 
+		argName := strings.Split(tField.Tag.Get("cmdln"), ",")[0]
+		switch argName {
+		case "", "-":
+			argName = tField.Name
+		}
+		r.arg.val[strings.ToLower(":"+argName)] = vField
 	}
-	return
+
+	return r
 }
 
+// Optional add the option struct or map[string]string to the router
+func (r *Router) Optional(t interface{}) *Router {
+	r.opt.val = make(valmap)
+
+	val := reflect.ValueOf(reflect.ValueOf(t).Interface())
+	switch {
+	// if the passed in interface{} is a map, make sure it's
+	// the correct kind of map
+	case val.Type().Kind() == reflect.Map:
+		if _, ok := val.Interface().(map[string]string); !ok {
+			r.opt.irf = nil
+			r.Err = ErrInvalidInterface
+			return r
+		}
+		r.opt.val["*"] = t
+		return r
+	// error if the passed in interface{} not a pointer,
+	// or if it is a pointer but not a struct.
+	case val.Kind() != reflect.Ptr,
+		val.Kind() == reflect.Ptr && val.Elem().Type().Kind() != reflect.Struct:
+		r.opt.irf = nil
+		r.Err = ErrInvalidInterface
+		return r
+	}
+	// the rest happens if the passed in interface{} is a struct
+
+	r.opt.irf = t
+	elm := val.Elem()
+
+	// loop through all of the fields of the passed in struct
+	for i := 0; i < elm.NumField(); i++ {
+		vField := elm.Field(i)
+		tField := elm.Type().Field(i)
+
+		if !vField.CanSet() {
+			// warning...
+			log.Println("Unexported field:", tField.Name)
+			continue
+		}
+
+		tags := strings.Split(tField.Tag.Get("cmdln"), ",")
+		for _, v := range tags {
+			// adds the tags to a map with a pointer to the value on the struct
+			switch {
+			case len(v) > 1 && v[0] == '-',
+				len(v) > 2 && string(v[0:2]) == "--":
+				r.opt.val[v] = vField
+			}
+		}
+	}
+
+	return r
+}
+
+// Handle registers the handler for the given pattern.
+// If a handler already exists for pattern, Handle panics.
 func (r *Router) Handle(cmdln string, handle Handle) {
 
-	if r.trees == nil {
-		r.trees = make(map[*regexp.Regexp]Handle)
+	// init all of the variables needed to handle...
+	ah := getArgsHandled(cmdln)
+	ahs := ah.String()
+
+	// init the maps needed to hold and check for collsions of handlers
+	if r.tree.arg == nil {
+		r.tree.arg = make(argmap)
 	}
 
-	if r.cmdlst == nil {
-		r.cmdlst = make([]string, 0)
+	if r.tree.hdl == nil {
+		r.tree.hdl = make(map[string]struct{})
 	}
 
-	r.cmdlst = append(r.cmdlst, cmdln)
-
-	cmdFlds := strings.Fields(regexp.QuoteMeta(cmdln))
-	initHelpTreeMaps(r, cmdFlds)
-
-	reCmd := regexp.MustCompile(`:(\w+)`)
-	reOptCmd := regexp.MustCompile(`:(\w+):`)
-
-	for i, v := range cmdFlds {
-		r.helpTree[i][v] = append(r.helpTree[i][v], i)
-
-		cmdOr := strings.Split(v, `\|`)
-		if len(cmdOr) > 1 {
-			cmdFlds[i] = fmt.Sprintf("(%s)", strings.Join(cmdOr, `|`))
-		}
-
-		cmdFlds[i] = string(reOptCmd.ReplaceAll([]byte(cmdFlds[i]), []byte(`(?P<$1>.[^\s]+)?`)))
-		cmdFlds[i] = string(reCmd.ReplaceAll([]byte(cmdFlds[i]), []byte(`(?P<$1>.[^\s]+)`)))
+	// check for collsions in of cmdlnroute paths
+	if _, isAlreadyHandled := r.tree.hdl[ahs]; isAlreadyHandled {
+		log.Fatal("There is a collsion for the handlers, they must be unique.")
+	} else {
+		r.tree.hdl[ahs] = struct{}{}
 	}
 
-	cmdSpacePlus := "^" + JoinWithSpace(cmdFlds) + "$"
+	// set up the function that will check the cmdln arguements and handle them
+	var treeFn = func(out chan<- inputHandle) (args chan string, done chan struct{}) {
+		args, done = make(chan string, 1), make(chan struct{})
 
-	// // Loop through all of the subcommands and add those handlers here
-	// log.Println("registering: ", cmdSpacePlus)
+		go doneTimeout(done)
+		go func(done chan struct{}) {
+			argList, err := parseArgsHandler(ah, args)
+			out <- inputHandle{in: argList, hn: handle, er: err}
+			close(done)
+		}(done)
 
-	r.trees[regexp.MustCompile(cmdSpacePlus)] = handle
+		return args, done
+	}
+
+	// add the function that will match paths to the root handler
+	r.tree.arg[ah.Root()] = append(r.tree.arg[ah.Root()], treeFn)
 }
 
+// Handler returns the handler to use for the given request,
+// consulting r.Method, r.Host, and r.URL.Path. It always returns
+// a non-nil handler. If the path is not in its canonical form, the
+// handler will be an internally-generated handler that redirects
+// to the canonical path.
+//
+// Handler also returns the registered pattern that matches the
+// request or, in the case of internally-generated redirects,
+// the pattern that will match after following the redirect.
+//
+// If there is no registered handler that applies to the request,
+// Handler returns a ``page not found'' handler and an empty pattern.
 func (r *Router) Handler(cmdln string, handler Handler) {
 	r.Handle(cmdln,
 		func(c *Context) {
@@ -119,366 +297,45 @@ func (r *Router) Handler(cmdln string, handler Handler) {
 	)
 }
 
-func (r *Router) HandlerFunc(cmdln string, handler HandlerFunc) {
+// HandleFunc registers the handler function for the given pattern.
+func (r *Router) HandleFunc(cmdln string, handler HandlerFunc) {
 	r.Handler(cmdln, handler)
 }
 
+// ServeCmdln dispatches the request to the handler whose
+// pattern most closely matches the request URL.
 func (r *Router) ServeCmdln(c *Context) {
-	if r.PanicHandler != nil {
-		defer r.recovery(c)
+	var err error
+
+	c.opt = r.opt.irf
+	c.arg = r.arg.irf
+
+	args := c.raw
+	argsCh := make(chan string, len(args))
+
+	// formualate the arguements as a channel...
+	for _, v := range args {
+		argsCh <- v
+	}
+	close(argsCh)
+
+	// Set the default functionaly if needed.
+	if len(r.opt.pfn) == 0 {
+		r.opt.pfn = append(r.opt.pfn, defaultParseOptArgFunc)
 	}
 
-	if len(c.Unhandled) > 0 && r.UnhandledHandler != nil {
-		r.UnhandledHandler(c)
-		return
-	}
-
-	for rx, handle := range r.trees {
-		if rx.Match(c.cmdlnParse) {
-
-			parseCmds(rx, string(c.cmdlnParse), r.cmds)
-			c.Command = r.cmds
-			handle(c)
-			if r.HandlerDone != nil {
-				r.HandlerDone(c)
-			}
-			return
+	// run through all of the functions serially to parse the commandline arguments to a struct or map
+	for _, fn := range r.opt.pfn {
+		// note that argsCh get's overwritten...
+		if err, argsCh = fn(argsCh, r.opt.val, c); err != nil {
+			c.err = errors.Wrap(err, "during function call")
 		}
 	}
 
-	if r.NotFoundHandler != nil {
-		r.NotFoundHandler(c)
-		return
-	}
+	r.arg.pfn(argsCh, r.tree.arg, r.arg.val, c)
 }
 
-func (r *Router) Mode(i int) {
-	r.mode = i
-}
-
-func (r *Router) SubCmd(s string) *SubRouter {
-	if r.subs == nil {
-		r.subs = make(map[string]*SubRouter)
-	}
-
-	r.subs[s] = &SubRouter{subcmd: s, Router: new(Router)}
-	return r.subs[s]
-}
-
-func (r *Router) Options(opts interface{}) {
-	r.opts = opts
-}
-
-func (r *Router) Command(cmds interface{}) {
-	r.cmds = cmds
-}
-
-func initHelpTreeMaps(r *Router, cmdFlds []string) {
-	// initalize the maps that are needed to fill out the
-	// helpTree when adding the fields
-	extraFields := len(cmdFlds) - len(r.helpTree)
-	if extraFields > 0 {
-		fieldMap := make([]map[string][]int, extraFields)
-		r.helpTree = append(r.helpTree, fieldMap...)
-		for i := range r.helpTree {
-			if r.helpTree[i] == nil {
-				r.helpTree[i] = make(map[string][]int)
-			}
-		}
-	}
-}
-
-// Parse will start the parsing process for the commandline
+// Parse is what will kick off the cmdln router process
 func Parse(args []string, handler Handler) {
-	parse, opts, extra := parseArgs(args, handler)
-
-	c := NewContext()
-	c.Options = opts
-	c.Unhandled = extra
-	c.cmdlnAsRaw = []byte(strings.Join(args, " "))
-	c.cmdlnParse = []byte(Join(parse, " "))
-	handler.ServeCmdln(c)
-	switch handler.(type) {
-	case *Router:
-		for _, v := range handler.(*Router).subs {
-			Parse(args, v)
-		}
-	case *SubRouter:
-		for _, v := range handler.(*SubRouter).subs {
-			Parse(args, v)
-		}
-	}
+	handler.ServeCmdln(NewContext(args))
 }
-
-func parseCmds(rx *regexp.Regexp, cmdtxt string, cmd interface{}) {
-	if cmd == nil {
-		return
-	}
-
-	names := rx.SubexpNames()
-	values := rx.FindStringSubmatch(cmdtxt)
-
-	if r, ok := cmd.(map[string]interface{}); ok {
-		for i, v := range names {
-			if len(v) > 0 {
-				r[v] = values[i]
-			}
-		}
-		return
-	}
-
-	val := reflect.ValueOf(reflect.ValueOf(cmd).Interface())
-	if val.Elem().Type().Kind() != reflect.Struct {
-		log.Fatal("Only stucts can be passed in [1]. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
-	}
-
-	// For now we can only accept flat command. No structs or slices.
-	// Just the following type:
-	//    *string
-
-	elm := val.Elem()
-	for i := 0; i < elm.NumField(); i++ {
-		vField := elm.Field(i)
-		tField := elm.Type().Field(i)
-
-		for n, v := range names {
-			if strings.ToLower(tField.Name) == strings.ToLower(v) {
-				if vField.CanSet() {
-					vField.Set(reflect.ValueOf(&values[n]))
-				}
-				break
-			}
-		}
-	}
-
-	return
-}
-
-func parseArgs(args []string, handler Handler) ([]Argument, interface{}, map[string]string) {
-	// create a map of the options we will be looking for
-	var pags []Argument
-	var opts interface{}
-	var xtra map[string]string
-
-	switch handler.(type) {
-	case *Router:
-		r := handler.(*Router)
-		if r.opts != nil {
-			pags, opts, xtra = parseArgsToStruct(r.mode, args, r.opts)
-		} else {
-			pags, opts = parseArgsToMap(r.mode, args)
-		}
-	case *SubRouter:
-		r := handler.(*SubRouter)
-		if r.opts != nil {
-			pags, opts, xtra = parseArgsToStruct(r.mode, args, r.opts)
-		} else {
-			pags, opts = parseArgsToMap(r.mode, args)
-		}
-	}
-
-	return pags, opts, xtra
-}
-
-func parseArgsToMap(mode int, args []string) (pags []Argument, opts map[string]*string) {
-
-	opts = make(map[string]*string)
-	for i, field := range args {
-		if field[0] == '-' {
-			opts[field] = func(a []string, i int) (r *string) {
-				if len(args) > i {
-					r = &a[i]
-				}
-				return
-			}(args, i+1)
-			continue
-		}
-		if i-1 >= 0 && args[i-1][0] == '-' {
-			continue // skip because it should have already be processed
-		}
-		pags = append(pags, Argument{arg: field})
-	}
-
-	return
-}
-
-type M struct {
-	k int // key index
-	v int // value index
-}
-
-func genArgMaps(args []string) (flatMap map[string]M, tmpPags []Argument) {
-	flatMap = make(map[string]M)
-
-	for i, arg := range args {
-		tmpPags = append(tmpPags, Argument{arg: arg})
-
-		if arg[0] == '-' {
-			v := i + 1
-			if v > len(args) {
-				v = -1
-			}
-			if strings.Contains(arg, "=") { // This doesn't check for inside of quotes
-				arg = strings.Split(arg, "=")[0]
-				v = -2
-			}
-			flatMap[arg] = M{i, v} // always return index of the value to take.
-			continue
-		}
-		if i-1 >= 0 && args[i-1][0] == '-' && flatMap[args[i-1]].v != -2 {
-			continue // skip because it should have already be processed
-		}
-	}
-
-	return
-}
-
-func parseCmdlnVal(data M, args []string, defaultVal string) (val string, err error) {
-	switch data.v {
-	case -1:
-		// This is a flag that is expecting a default value
-		if len(defaultVal) > 0 {
-			val = defaultVal
-		} else {
-			err = errors.New("No default value found.")
-		}
-		return
-	case -2:
-		// This is an arguement that looks like --key=<value>
-		vals := strings.Split(args[data.k], "=")
-		if len(vals) > 1 {
-			val = vals[1]
-		} else {
-			err = errors.New("No value found.")
-		}
-		return
-	}
-	// This is for if a bool is at the end
-	if data.v < len(args) {
-		val = args[data.v]
-	}
-	return
-}
-
-func parseDefaultVal(arg string) (a, b string) {
-	arg = a
-	if strings.Contains(arg, "=") {
-		kv := strings.Split(arg, "=")
-		if len(kv) == 2 {
-			a = kv[0]
-			b = kv[1]
-		}
-	}
-	return
-}
-
-func parseArgsToStruct(mode int, args []string, optsIn interface{}) (pags []Argument, opts interface{}, unhandled map[string]string) {
-	//	var err error
-	var removeArg Argument
-
-	argMap, argTmpMap := genArgMaps(args)
-
-	val := reflect.ValueOf(reflect.ValueOf(optsIn).Interface())
-	if val.Elem().Type().Kind() != reflect.Struct {
-		log.Fatal("Only stucts can be passed in [2]. Please check the type of the interface{}. Found: ", val.Elem().Type().Kind())
-	}
-	elm := val.Elem()
-
-	// For now we can only accept flat options. No structs or slices.
-	// Just the following types:
-	//    *int
-	//    *float
-	//    *string
-	//    *bool
-
-	// Add the data to the struct, using type hints to apply the data
-	for i := 0; i < elm.NumField(); i++ {
-		vField := elm.Field(i)
-		tField := elm.Type().Field(i)
-
-		if vField.CanSet() == false {
-			log.Println("Please make sure the ", tField.Name, " field is exportable.")
-			continue
-		}
-
-		tags := tField.Tag.Get("cmdln")
-		optShort, optLong, _ := parseCmdlnTag(tags)
-
-		for _, v := range []string{optShort, optLong} {
-			if argv, ok := argMap[v]; ok {
-
-				_, defaultVal := parseDefaultVal(v)
-
-				val, err := parseCmdlnVal(argv, args, defaultVal)
-				if err != nil {
-					log.Println("Error getting value. Err: ", err)
-					continue
-				}
-
-				switch vField.Interface().(type) {
-				case *int:
-					vPtr, err := strconv.Atoi(val)
-					if err != nil {
-						log.Println("Error converting to int. Err: ", err)
-						continue
-					}
-					vField.Set(reflect.ValueOf(&vPtr))
-					argTmpMap[argv.k] = removeArg
-				case *float64:
-					vPtr, err := strconv.ParseFloat(val, 10)
-					if err != nil {
-						log.Println("Error converting to int. Err: ", err)
-						continue
-					}
-					vField.Set(reflect.ValueOf(&vPtr))
-					argTmpMap[argv.k] = removeArg
-				case *string:
-					vField.Set(reflect.ValueOf(&val))
-					argTmpMap[argv.k] = removeArg
-				case *bool:
-					vPtr := true
-					vField.Set(reflect.ValueOf(&vPtr))
-					argTmpMap[argv.k] = removeArg
-				default:
-					log.Println("Not parse-able. Found Kind: ", vField.Type())
-				}
-			}
-		}
-	}
-
-	unhandled = make(map[string]string)
-
-	for _, v := range argTmpMap {
-		if val, ok := argMap[v.arg]; ok {
-			if val.v < len(args) { // because unhandled may assume an extra param...
-				unhandled[v.arg] = args[val.v]
-			} else {
-				unhandled[v.arg] = ""
-			}
-			argTmpMap[val.k] = removeArg
-			if val.v != -1 && val.v < len(args) {
-				argTmpMap[val.v] = removeArg
-			}
-			continue
-		}
-		if v != removeArg {
-			pags = append(pags, v)
-		}
-	}
-
-	// log.Println(pags, optsIn, unhandled)
-	return pags, optsIn, unhandled
-}
-
-func Join(args []Argument, s string) string {
-	var str []string
-	for _, a := range args {
-		str = append(str, a.String())
-	}
-	return strings.Join(str, s)
-}
-
-func DefaultStr(x string) *string     { return &x }
-func DefaultInt(x int) *int           { return &x }
-func DefaultFloat(x float64) *float64 { return &x }
-func DefaultBool(x bool) *bool        { return &x }

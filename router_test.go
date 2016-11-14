@@ -1,209 +1,332 @@
 package cmdlnrouter
 
-import "testing"
-import "strings"
-import "reflect"
-import "encoding/json"
-import "regexp"
+import (
+	"reflect"
+	"testing"
+)
 
-func TestParseArgsToMap(t *testing.T) {
+func TestPassingOptionStruct(t *testing.T) {
 
-	ptrs := func(x string) *string { return &x }
-	ptrn := func() *string { return nil }
-
-	tests := []struct {
-		test []string
-		pags []string
-		opts map[string]*string
-	}{
-		{
-			[]string{"example"},
-			[]string{"example"},
-			map[string]*string{},
-		},
-		{
-			strings.Split("example with more than 1", " "),
-			[]string{"example", "with", "more", "than", "1"},
-			map[string]*string{},
-		},
-		{
-			strings.Split("--example with --some flags", " "),
-			[]string{},
-			map[string]*string{"--example": ptrs("with"), "--some": ptrs("flags")},
-		},
-		{
-			strings.Split("--example --with --extra-space-and --only --flags", " "),
-			[]string{},
-			map[string]*string{
-				"--example":         ptrs("--with"),
-				"--with":            ptrs("--extra-space-and"),
-				"--extra-space-and": ptrs("--only"),
-				"--only":            ptrs("--flags"),
-				"--flags":           ptrn(),
-			},
-		},
-		{
-			[]string{"example", "--simple", "flag"},
-			[]string{"example"},
-			map[string]*string{"--simple": ptrs("flag")},
-		},
-		{
-			strings.Split("example -s flag", " "),
-			[]string{"example"},
-			map[string]*string{"-s": ptrs("flag")},
-		},
-		{
-			strings.Split("example -s flag example", " "),
-			[]string{"example", "example"},
-			map[string]*string{"-s": ptrs("flag")},
-		},
-		{
-			strings.Split("example -swma flag example", " "),
-			[]string{"example", "example"},
-			map[string]*string{"-swma": ptrs("flag")},
-		},
-		{
-			strings.Split("example -swma", " "),
-			[]string{"example"},
-			map[string]*string{"-swma": ptrn()},
-		},
-		{
-			strings.Split("--simple flag example", " "),
-			[]string{"example"},
-			map[string]*string{"--simple": ptrs("flag")},
-		},
-		{
-			strings.Split("ex•mple -a 1 -b 2 --cdef 3 four", " "),
-			[]string{"ex•mple", "four"},
-			map[string]*string{
-				"-a":     ptrs("1"),
-				"-b":     ptrs("2"),
-				"--cdef": ptrs("3"),
-			},
-		},
-		{
-			[]string{"bonjour", "⛳", "-a", "hello world"},
-			[]string{"bonjour", "⛳"},
-			map[string]*string{"-a": ptrs("hello world")},
-		},
+	type opt struct {
+		Short *bool `cmdln:"-s,--short,a short flag test"`
+		Long  *bool `cmdln:"-l,--long,a long flag test"`
 	}
 
-	for _, tst := range tests {
-		a, b := parseArgsToMap(0, tst.test)
-		a1 := strings.Join(tst.pags, " ")
-		a2 := Join(a, " ")
-		if a1 != a2 {
-			t.Error("Expected:", a1, "Found:", a2)
-		}
-		if !reflect.DeepEqual(tst.opts, b) {
-			t.Error("Expected:", tst.opts, "Found:", b)
-		}
+	o := new(opt)
+	r := New()
+	r.Optional(o)
+
+	var want0 *bool
+	have0 := o.Short
+	if want0 != have0 {
+		t.Errorf("[0] Want: %v Have: %v", want0, have0)
+	}
+
+	want1 := o
+	have1 := r.opt.irf
+
+	if !reflect.DeepEqual(want1, have1) {
+		t.Errorf("[1] Want: %v Have: %v", want1, have1)
+	}
+
+	want1a := map[string]reflect.Value{
+		"-s":      reflect.ValueOf(o.Short),
+		"--short": reflect.ValueOf(o.Short),
+		"-l":      reflect.ValueOf(o.Long),
+		"--long":  reflect.ValueOf(o.Long),
+	}
+
+	have1a := r.opt.val
+
+	if !reflect.DeepEqual(want1a, have1a) {
+		//t.Errorf("[1a] Want: %#v Have: %#v", want1a, have1a)
+	}
+
+	Parse([]string{"command", "-s", "--long"}, r)
+
+	want1b := true
+	have1b := o.Short
+
+	if want0 == have1b {
+		t.Errorf("[1b+] Want: %v Have: %v", want1b, have1b)
+	}
+	if want0 != have1b && want1b != *have1b {
+		t.Errorf("[1b-] Want: %v Have: %v", want1b, have1b)
+	}
+
+	want2b := true
+	have2b := want1.Long
+
+	if want0 == have2b {
+		t.Errorf("[1b+] Want: %v Have: %v", want2b, have2b)
+	}
+
+	if want0 != have2b && want2b != *have2b {
+		t.Errorf("[1b-] Want: %v Have: %v", want2b, have2b)
+	}
+
+	var m int32
+	want2 := ErrInvalidInterface
+
+	r2 := New().Optional(m)
+	have2 := r2.Err
+
+	if want2 != have2 {
+		t.Errorf("[2] Want: %v Have: %v", want2, have2)
 	}
 }
 
-type TestContext struct {
-	opts interface{}
-}
+func TestMultipleOptions(t *testing.T) {
 
-type TestOptionsStruct1 struct {
-	A *int     `cmdln:"--aye,-a,A short description"`
-	B *float64 `cmdln:"--bee,-b,A short description"`
-	C *string  `cmdln:"--sea,-c,A short description"`
-	D *bool    `cmdln:"--dei,-d,A short description"`
-}
-
-type TestCommandStruct1 struct {
-	Ample *string
-}
-
-func TestParseArgsToStruct(t *testing.T) {
-
-	tests := []struct {
-		test []string
-		pags []string
-		strt TestOptionsStruct1
-		opts string
-	}{
-		{
-			[]string{"example"},
-			[]string{"example"},
-			TestOptionsStruct1{},
-			`{"A":null,"B":null,"C":null,"D":null}`,
-		},
-		{
-			[]string{"example", "--aye", "1"},
-			[]string{"example"},
-			TestOptionsStruct1{},
-			`{"A":1,"B":null,"C":null,"D":null}`,
-		},
-		{
-			[]string{"example", "--aye", "1", "-b", "2.5", "--sea", "This is a test?"},
-			[]string{"example"},
-			TestOptionsStruct1{},
-			`{"A":1,"B":2.5,"C":"This is a test?","D":null}`,
-		},
+	type opt struct {
+		Short []bool `cmdln:"-s,--short,a short flag test"`
 	}
 
-	for _, tst := range tests {
+	var want0 []bool
 
-		c := new(TestContext)
-		c.opts = &tst.strt
+	o := new(opt)
+	r := New()
+	r.Optional(o)
 
-		a, b, _ := parseArgsToStruct(0, tst.test, c.opts)
-		a1 := strings.Join(tst.pags, " ")
-		a2 := Join(a, " ")
+	Parse([]string{"command", "-s", "--short"}, r)
 
-		b1, _ := json.Marshal(b)
-		b2 := string(b1)
+	want1b := []bool{true, true}
+	have1b := o.Short
 
-		if a1 != a2 {
-			// t.Error("Expected:", a1, "Found:", a2)
-		}
-		if tst.opts != b2 {
-			t.Error("Expected:", tst.opts, "Found:", b2)
-		}
+	if reflect.DeepEqual(want0, have1b) {
+		t.Errorf("[1b+] Want: %v Have: %v", want1b, have1b)
+	}
+
+	if !reflect.DeepEqual(want0, have1b) && !reflect.DeepEqual(want1b, have1b) {
+		t.Errorf("[1b-] Want: %v Have: %v", want1b, have1b)
 	}
 }
 
-func TestParseCommand(t *testing.T) {
+func TestBoolFalseOption(t *testing.T) {
 
-	tests := []struct {
-		rgex *regexp.Regexp
-		cmln string
-		cmds string
-		strt TestCommandStruct1
-	}{
-		{
-			regexp.MustCompile(`^example$`),
-			"example",
-			`{"Ample":null}`,
-			TestCommandStruct1{},
-		},
-		{
-			regexp.MustCompile(`^(?P<ample>\w+)$`),
-			"example",
-			`{"Ample":"example"}`,
-			TestCommandStruct1{},
-		},
+	type opt struct {
+		Short *bool `cmdln:"-s,--short,a short flag test"`
 	}
 
-	for _, tst := range tests {
+	var want0 *bool
 
-		parseCmds(tst.rgex, tst.cmln, &tst.strt)
+	o := new(opt)
+	r := New()
+	r.Optional(o)
 
-		a1, _ := json.Marshal(tst.strt)
-		a2 := string(a1)
+	Parse([]string{"command", "-s=false"}, r)
 
-		if tst.cmds != a2 {
-			t.Error("Expected:", tst.cmds, "Found:", a2)
-		}
+	b := false
+	want1b := &b
+	have1b := o.Short
+
+	if want0 == have1b {
+		t.Errorf("[1b+] Want: %v Have: %v", want1b, have1b)
 	}
 
-	b1 := map[string]interface{}{"ample": "example"}
-	b2 := make(map[string]interface{})
-	parseCmds(regexp.MustCompile(`^(?P<ample>\w+)$`), "example", b2)
+	if want0 != have1b && *want1b != *have1b {
+		t.Errorf("[1b-] Want: %v Have: %v", *want1b, *have1b)
+	}
+}
 
-	if !reflect.DeepEqual(b1, b2) {
-		t.Error("Expected:", b1, "Found:", b2)
+func TestStringOption(t *testing.T) {
+
+	type opt struct {
+		Short  *string  `cmdln:"-s,--short,a short flag test"`
+		Medium *string  `cmdln:"-m,--med,a medium? flag test"`
+		Long   []string `cmdln:"-l,--long,a long flag test"`
+	}
+
+	var want0 *string
+
+	o := new(opt)
+	r := New()
+	r.Optional(o)
+
+	Parse([]string{"command", "-s", "less", "--med=is", "-l", "more", `-l="or"`, "--long=moreless"}, r)
+
+	s1 := "less"
+	want1 := &s1
+	have1 := o.Short
+
+	if want0 == have1 {
+		t.Errorf("[1+] Want: %v Have: %v", want1, have1)
+	}
+
+	if want0 != have1 && *want1 != *have1 {
+		t.Errorf("[1-] Want: %v Have: %v", *want1, *have1)
+	}
+
+	s2 := "is"
+	want2 := &s2
+	have2 := o.Medium
+
+	if want0 == have2 {
+		t.Errorf("[2+] Want: %v Have: %v", want2, have2)
+	}
+
+	if want0 != have2 && *want2 != *have2 {
+		t.Errorf("[2-] Want: %v Have: %v", *want2, *have2)
+	}
+
+	want3 := []string{"more", "or", "moreless"}
+	have3 := o.Long
+
+	if reflect.DeepEqual(want0, have3) {
+		t.Errorf("[3+] Want: %v Have: %v", want3, have3)
+	}
+
+	if !reflect.DeepEqual(want0, have3) && !reflect.DeepEqual(want3, have3) {
+		t.Errorf("[3-] Want: %v Have: %v", want3, have3)
+	}
+}
+
+func TestMap1(t *testing.T) {
+
+	want := map[string]string{"--short": "true", "-s": "money"}
+	have := make(map[string]string)
+	r := New()
+	r.Optional(have)
+
+	Parse([]string{"command", "--short", "-s", "money", "after", "pit"}, r)
+
+	if !reflect.DeepEqual(want, have) {
+		t.Errorf("[3+] Want: %v Have: %v", want, have)
+	}
+}
+
+func TestHandledOption(t *testing.T) {
+
+	type opt struct {
+		Short *bool `cmdln:"-s,--short,a short flag test"`
+	}
+
+	var want0 *bool
+
+	o := new(opt)
+	r := New()
+	r.Optional(o)
+
+	handle := make(chan string, 2)
+	r.Handle("command fixed", func(c *Context) { handle <- "good" })
+	r.Handle("command unhandled", func(c *Context) { handle <- "bad" })
+	defer func() {
+		close(handle)
+	}()
+	Parse([]string{"command", "-s=false", "fixed"}, r)
+
+	b := false
+	want1b := &b
+	have1b := o.Short
+
+	if want0 == have1b {
+		t.Errorf("[1b+] Want: %v Have: %v", want1b, have1b)
+	}
+
+	if want0 != have1b && *want1b != *have1b {
+		t.Errorf("[1b-] Want: %v Have: %v", *want1b, *have1b)
+	}
+
+	close(handle)
+	want2 := "good"
+	have2 := <-handle
+	if want2 != have2 {
+		t.Errorf("[2] Want: %v Have: %v", want2, have2)
+	}
+}
+
+func TestHandledArgument(t *testing.T) {
+
+	type opt struct {
+		Short *bool `cmdln:"-s,--short,a short flag test"`
+	}
+
+	type arg struct {
+		Filename *string
+	}
+
+	var want0 *bool
+
+	o := new(opt)
+	a := new(arg)
+	r := New()
+	r.Optional(o)
+	r.Arguments(a)
+
+	handle := make(chan string, 2)
+	r.Handle("command fixed :filename", func(c *Context) {
+		ar := c.Arguments().(*arg)
+		handle <- *ar.Filename
+	})
+	r.Handle("command unhandled", func(c *Context) { handle <- "bad" })
+	defer func() {
+		close(handle)
+	}()
+	Parse([]string{"command", "-s=false", "fixed", "/path/to/filename.md"}, r)
+
+	b := false
+	want1b := &b
+	have1b := o.Short
+
+	if want0 == have1b {
+		t.Errorf("[1b+] Want: %v Have: %v", want1b, have1b)
+	}
+
+	if want0 != have1b && *want1b != *have1b {
+		t.Errorf("[1b-] Want: %v Have: %v", *want1b, *have1b)
+	}
+
+	want2 := "/path/to/filename.md"
+	have2 := <-handle
+	if want2 != have2 {
+		t.Errorf("[2] Want: %v Have: %v", want2, have2)
+	}
+}
+
+func TestHandledDoubleArgument(t *testing.T) {
+
+	type opt struct {
+		Short *bool `cmdln:"-s,--short,a short flag test"`
+	}
+
+	type arg struct {
+		Filename *string
+	}
+
+	var want0 *bool
+
+	o := new(opt)
+	a := new(arg)
+	r := New()
+	r.Optional(o)
+	r.Arguments(a)
+
+	handle := make(chan string, 2)
+	r.Handle("command fixed :filename", func(c *Context) {
+		ar := c.Arguments().(*arg)
+		handle <- *ar.Filename
+	})
+	r.Handle("command unhandled :porter", func(c *Context) { handle <- "bad" })
+	defer func() {
+		close(handle)
+	}()
+	Parse([]string{"command", "-s=false", "fixed", "/path/to/filename.md"}, r)
+
+	b := false
+	want1b := &b
+	have1b := o.Short
+
+	if want0 == have1b {
+		t.Errorf("[1b+] Want: %v Have: %v", want1b, have1b)
+	}
+
+	if want0 != have1b && *want1b != *have1b {
+		t.Errorf("[1b-] Want: %v Have: %v", *want1b, *have1b)
+	}
+
+	want2 := "/path/to/filename.md"
+	have2 := <-handle
+	if want2 != have2 {
+		t.Errorf("[2] Want: %v Have: %v", want2, have2)
 	}
 }
